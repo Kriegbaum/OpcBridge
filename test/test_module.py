@@ -1,7 +1,12 @@
-from opcBridge import makeEightBit, rgbSetBrightness
+from opcBridge import makeEightBit, rgbSetBrightness, brightnessChange
 def test_makeEightBit():
     assert makeEightBit(3666) == 255
 
 def test_rgbSetBrightness():
-    newRGB = rgbSetBrightness(255, [1,1,1])
-    assert newRGB == [255,255,255]
+    assert rgbSetBrightness(255, [1,1,1]) == [255,255,255]
+    assert rgbSetBrightness(255, [0,0,0]) == [0,0,0]
+    assert rgbSetBrightness(0, [255,255,255]) == 0
+
+def test_brightnessChange():
+    assert brightnessChange([128,128,128], 0) == [128,128,128]
+    assert brightnessChange([128,128,128], 255) = [255,255,255]
