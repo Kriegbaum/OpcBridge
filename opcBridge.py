@@ -25,7 +25,10 @@ def makeEightBit(value):
 
 def rgbSetBrightness(setBri, rgb):
     currentBri = max(rgb)
-    ratio = setBri / currentBri
+    if currentBri == 0:
+        ratio = 0
+    else:
+        ratio = setBri / currentBri
     rgbOut = [rgb[0] * ratio, rgb[1] * ratio, rgb[2] * ratio]
     return rgbOut
 
@@ -121,6 +124,7 @@ def clockLoop():
                 clockerActive.clear()
                 print('Sleeping clocker...')
         clockerActive.wait()
+
 ##################ARRAY MANIPULATING FUNCTIONS##################################
 def absoluteFade(rgb, indexes, fadeTime):
     runPSU()
@@ -195,6 +199,9 @@ class AbsoluteFade(Resource):
         clockerActive.set()
 
 class MultiCommand(Resource):
+    '''Is given a list of indexes, associated values and fade times
+    executes them all in one action. This is much more efficent than
+    several absoluteFade commands strung together'''
     def get(self):
         args = parser.parse_args()
         commandList = args['commandlist']
@@ -256,7 +263,7 @@ if __name__ == '__main__':
         print('Local IP detection failed, listening on localhost')
         localIP = '127.0.0.1'
     ipSock.close()
-    socket.setdefaulttimeout(60)
+
     #########################CONTROL OBJECT DEFINITIONS#############################
     pixels = np.zeros((512, 3), dtype='float32')
     diff = np.zeros((512, 3), dtype='float32' )

@@ -18,4 +18,6 @@ numpy == 1.16.2
 # E:\code\python\OpcBridge\opcBridge.py: 14
 requests == 2.21.0
 
+#testing and code coverage
 pytest == 6.1.2
+codecov == 2.1.11
