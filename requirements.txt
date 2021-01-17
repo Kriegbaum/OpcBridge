@@ -15,8 +15,7 @@ cronyo == 0.4.2
 # E:\code\python\OpcBridge\opcBridge.py: 9
 numpy == 1.16.2
 
-# E:\code\python\OpcBridge\opcBridge.py: 1
-opc == 0.1.0
-
 # E:\code\python\OpcBridge\opcBridge.py: 14
 requests == 2.21.0
+
+pytest == 6.2.1

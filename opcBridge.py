@@ -13,62 +13,6 @@ from flask_restful import Resource, Api, reqparse
 import logging
 import requests
 
-#########################LOAD IN USER CONFIG####################################
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcConfig.yml')) as f:
-    configFile = f.read()
-configs = yaml.safe_load(configFile)
-
-################################FLASK OBJECTS###################################
-FLASK_DEBUG = False
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-fetcher = Flask(__name__)
-api = Api(fetcher)
-parser = reqparse.RequestParser()
-
-#########################VARIOUS COMMAND FIELDS#################################
-parser.add_argument('fadetime', type=float, help='How long will this fade take?')
-parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
-parser.add_argument('id', type=str, help='Arbtration ID')
-parser.add_argument('ip', type=str, help='IP address of client')
-parser.add_argument('rgb', type=json.loads, help='Target color')
-parser.add_argument('magnitude', type=float, help='Size of fade')
-parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
-
-##########################GET LOCAL IP##########################################
-ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-try:
-    ipSock.connect(('10.255.255.255', 1))
-    localIP = ipSock.getsockname()[0]
-    print('Local IP set to', localIP)
-except Exception as e:
-    print(e)
-    print('Local IP detection failed, listening on localhost')
-    localIP = '127.0.0.1'
-ipSock.close()
-socket.setdefaulttimeout(60)
-#########################CONTROL OBJECT DEFINITIONS#############################
-pixels = np.zeros((512, 3), dtype='float32')
-diff = np.zeros((512, 3), dtype='float32' )
-endVals = np.zeros((512, 3), dtype='float32')
-remaining = np.zeros((512), dtype='uint16')
-
-clockerActive = threading.Event()
-
-commands = queue.Queue(maxsize=100)
-frameRate = 16
-FCclient = opc.Client('localhost:7890')
-arbitration = [False, '127.0.0.1']
-
-##################SERVER LOGGING AND REPORTING FUNCTIONS########################
-def logError(err):
-    print(err)
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcBridge-log.txt'), 'a') as logFile:
-        logFile.write(err)
-        logFile.write('\n')
-
-bootMsg = 'Server booted at ' + str(datetime.datetime.now()) + '\n'
-logError(bootMsg)
 ############################SUPPORT FUNCTIONS###################################
 def pixelsToJson(npArray):
     lstOut = []
@@ -218,7 +162,6 @@ class Pixels(Resource):
         print('\nSending pixels to %s \n' % request.remote_addr)
         message = pixelsToJson(pixels)
         return message
-api.add_resource(Pixels, '/pixels')
 
 class Arbitration(Resource):
     def put(self):
@@ -240,7 +183,6 @@ class Arbitration(Resource):
             return False
         else:
             return True
-api.add_resource(Arbitration, '/arbitration')
 
 class AbsoluteFade(Resource):
     '''Is given a color to fade to, and executes fade'''
@@ -251,7 +193,6 @@ class AbsoluteFade(Resource):
         indexes = args['indexes']
         commands.put((absoluteFade, [rgb, indexes, fadeTime]))
         clockerActive.set()
-api.add_resource(AbsoluteFade, '/absolutefade')
 
 class MultiCommand(Resource):
     def get(self):
@@ -259,7 +200,6 @@ class MultiCommand(Resource):
         commandList = args['commandlist']
         commands.put((multiCommand, [commandList]))
         clockerActive.set()
-api.add_resource(MultiCommand, '/multicommand')
 
 class RelativeFade(Resource):
     '''Is given a brightness change, and alters the brightness, likely unpredicatable
@@ -271,30 +211,98 @@ class RelativeFade(Resource):
         fadeTime = args['fadetime']
         commands.put((relativeFade, [magnitude, indexes, fadeTime]))
         clockerActive.set()
-api.add_resource(RelativeFade, '/relativefade')
 
-clocker = threading.Thread(target=clockLoop)
 
-#Test pattern to indicate server is up and running
-testPatternOff = np.zeros((512, 3))
-testPatternRed = np.full((512, 3), [64,0,0])
 
-FCclient.put_pixels(testPatternRed)
-FCclient.put_pixels(testPatternRed)
-time.sleep(.5)
-FCclient.put_pixels(testPatternOff)
-FCclient.put_pixels(testPatternOff)
-time.sleep(.5)
-FCclient.put_pixels(testPatternRed)
-FCclient.put_pixels(testPatternRed)
-time.sleep(.5)
-FCclient.put_pixels(testPatternOff)
-FCclient.put_pixels(testPatternOff)
 
-del testPatternOff
-del testPatternRed
+if __name__ == '__main__':
+    #########################LOAD IN USER CONFIG####################################
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcConfig.yml')) as f:
+        configFile = f.read()
+    configs = yaml.safe_load(configFile)
 
-#Initiate server
-clocker.daemon = True
-clocker.start()
-fetcher.run(host=localIP, port=8000, debug=FLASK_DEBUG)
+    ################################FLASK OBJECTS###################################
+    FLASK_DEBUG = False
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    fetcher = Flask(__name__)
+    api = Api(fetcher)
+
+    api.add_resource(Pixels, '/pixels')
+    api.add_resource(Arbitration, '/arbitration')
+    api.add_resource(AbsoluteFade, '/absolutefade')
+    api.add_resource(MultiCommand, '/multicommand')
+    api.add_resource(RelativeFade, '/relativefade')
+
+    parser = reqparse.RequestParser()
+
+    #########################VARIOUS COMMAND FIELDS#################################
+    parser.add_argument('fadetime', type=float, help='How long will this fade take?')
+    parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
+    parser.add_argument('id', type=str, help='Arbtration ID')
+    parser.add_argument('ip', type=str, help='IP address of client')
+    parser.add_argument('rgb', type=json.loads, help='Target color')
+    parser.add_argument('magnitude', type=float, help='Size of fade')
+    parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
+
+    ##########################GET LOCAL IP##########################################
+    ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        ipSock.connect(('10.255.255.255', 1))
+        localIP = ipSock.getsockname()[0]
+        print('Local IP set to', localIP)
+    except Exception as e:
+        print(e)
+        print('Local IP detection failed, listening on localhost')
+        localIP = '127.0.0.1'
+    ipSock.close()
+    socket.setdefaulttimeout(60)
+    #########################CONTROL OBJECT DEFINITIONS#############################
+    pixels = np.zeros((512, 3), dtype='float32')
+    diff = np.zeros((512, 3), dtype='float32' )
+    endVals = np.zeros((512, 3), dtype='float32')
+    remaining = np.zeros((512), dtype='uint16')
+
+    clockerActive = threading.Event()
+
+    commands = queue.Queue(maxsize=100)
+    frameRate = 16
+    FCclient = opc.Client('localhost:7890')
+    arbitration = [False, '127.0.0.1']
+
+    ##################SERVER LOGGING AND REPORTING FUNCTIONS########################
+    def logError(err):
+        print(err)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcBridge-log.txt'), 'a') as logFile:
+            logFile.write(err)
+            logFile.write('\n')
+
+    bootMsg = 'Server booted at ' + str(datetime.datetime.now()) + '\n'
+    logError(bootMsg)
+
+
+    clocker = threading.Thread(target=clockLoop)
+
+    #Test pattern to indicate server is up and running
+    testPatternOff = np.zeros((512, 3))
+    testPatternRed = np.full((512, 3), [64,0,0])
+
+    FCclient.put_pixels(testPatternRed)
+    FCclient.put_pixels(testPatternRed)
+    time.sleep(.5)
+    FCclient.put_pixels(testPatternOff)
+    FCclient.put_pixels(testPatternOff)
+    time.sleep(.5)
+    FCclient.put_pixels(testPatternRed)
+    FCclient.put_pixels(testPatternRed)
+    time.sleep(.5)
+    FCclient.put_pixels(testPatternOff)
+    FCclient.put_pixels(testPatternOff)
+
+    del testPatternOff
+    del testPatternRed
+
+    #Initiate server
+    clocker.daemon = True
+    clocker.start()
+    fetcher.run(host=localIP, port=8000, debug=FLASK_DEBUG)
