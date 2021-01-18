@@ -57,107 +57,154 @@ def bridgeValues(totalSteps, start, end):
         newRGB = [newRGB[0] + diffR, newRGB[1] + diffG, newRGB[2] + diffB]
         yield [int(newRGB[0]), int(newRGB[1]), int(newRGB[2])]
     yield end
+################################################################################
 
-def psuSwitch(state):
-    try:
-        ip = configs['PSUs']['ip']
-        port = configs['PSUs']['port']
-        params = {'index': configs['PSUs']['index'], 'state': state}
-        requests.get('http://' + ip + ':' + str(port) + '/switch', json=params, timeout=5)
-    except:
-        print('Failed to contact relay processor')
+class PSU:
+    def __init__(self, ip, port, index):
+        self.ip = ip
+        self.port = port
+        self.index = index
+        self.state = False
 
-def psuCheck(pixels):
-    for pix in pixels:
-        for color in pix:
-            if color > 0:
-                return True
-    return False
-
-def runPSU():
-    if not psuCheck(pixels):
-        print('Spinning up PSU')
-        psuSwitch(True)
-
-#############################RENDER LOOP########################################
-
-def clockLoop():
-    '''Processes individual frames'''
-    print('Initiating Clocker...')
-    while 1:
-        now = time.perf_counter()
-        while not commands.empty():
-            newCommand, args = commands.get()
-            try:
-                newCommand(*args)
-            except Exception as e:
-                print('YA FUCKED SOMETHING UP YOU IDIOT')
-                logError(str(e))
-
-
-        anyRemaining = False
-
-        for pix in range(512):
-            if not remaining[pix]:
-                pass
-            elif remaining[pix] > 1:
-                for i in range(3):
-                    pixels[pix][i] += diff[pix][i]
-                remaining[pix] -= 1
-                anyRemaining = True
-            elif remaining[pix] == 1:
-                pixels[pix] = endVals[pix]
-                remaining[pix] -= 1
-                anyRemaining = True
-
+    def switch(self, state):
+        '''Switch relay attached to lighting PSU'''
         try:
-            FCclient.put_pixels(pixels)
-        except Exception as e:
-            print('FCserver is down')
-        cycleTime = time.perf_counter() - now
-        time.sleep(max((1 / frameRate) - cycleTime, 0))
-        if not anyRemaining:
-            if not psuCheck(pixels):
-                print('Killing PSUs')
-                psuSwitch(False)
-            if commands.empty():
-                clockerActive.clear()
-                print('Sleeping clocker...')
-        clockerActive.wait()
+            params = {'index': self.index, 'state': self.state}
+            requests.get('http://' + ip + ':' + str(port) + '/switch', json=params, timeout=4)
+            self.state = state
+        except:
+            print('Failed to connect to relay processor')
 
-##################ARRAY MANIPULATING FUNCTIONS##################################
-def absoluteFade(rgb, indexes, fadeTime):
-    runPSU()
-    if not fadeTime:
-        fadeTime = 2 / frameRate
-    frames = int(fadeTime * frameRate)
-    for i in indexes:
-        remaining[i] = frames
-        for c in range(3):
-            diff[i][c] = (rgb[c] - pixels[i][c]) / frames
-        endVals[i] = rgb
+    def checkPixels(self, pixels):
+        '''Crawl down pixel array, if any value is above 0 return true
+        Used in conjunction with self.switch to kill power to PSU if lights are off'''
+        for pix in pixels:
+            for color in pix:
+                if color > 0:
+                    return True
+        return False
 
-def multiCommand(commandList):
-    runPSU()
-    for x in commandList:
-        indexes = x[0]
-        frames = int(x[2] * frameRate)
-        if not frames:
-            frames = 1
-        rgb = x[1]
+    def update(self, pixels):
+        '''If pixel array has no lights on, kill its associated PSU'''
+        if self.checkPixels(pixels):
+            if not self.state:
+                print('Spinning up PSU')
+                self.switch(True)
+        else:
+            if self.state:
+                print('Killing PSU')
+                self.switch(False)
+
+
+class Renderer:
+    def __init__(self):
+        #Current value of pixels being submitted to opc
+        self.pixels = np.zeros((512, 3), dtype='float32')
+        #Differential array: stores difference between this frame and the next
+        self.diff = diff = np.zeros((512, 3), dtype='float32' )
+        #End values: where the final frame should end up
+        self.endVals = np.zeros((512, 3), dtype='float32')
+        #Remaining number of frames for each pixel
+        self.remaining = np.zeros((512), dtype='uint16')
+
+        #Used to sleep thread when there is no rendering to be done
+        self.clockerActive = threading.Event()
+        #Queue of commands to be executed
+        #API handler thread produces commands, Render Loop consumes them
+        self.commands = queue.Queue(maxsize=100)
+        #TODO: Make framerate and opcClient ip configurable
+        self.frameRate = 16
+        self.opcClient = opc.Client('localhost:7890')
+        self.arbitration = [False, '127.0.0.1']
+        self.renderLoop = threading.Thread(target=self.render)
+
+    def absoluteFade(self, rgb, indexes, fadeTime):
+        '''Take pixels marked in indexes and fade them to value in rgb over
+        fadeTime amount of time'''
+        #If the fadeTime is 0, we still want at least 2 frames
+        #If only one frame, the interpolation engine will produce slow fade
+        if not fadeTime:
+            fadeTime = 2 / frameRate
+        frames = int(fadeTime * self.frameRate)
         for i in indexes:
-            remaining[i] = frames
+            self.remaining[i] = frames
             for c in range(3):
-                diff[i][c] = (rgb[c] - pixels[i][c]) / frames
-            endVals[i] = rgb
+                self.diff[i][c] = (rgb[c] - pixels[i][c]) / frames
+            self.endVals[i] = rgb
 
-def relativeFade(magnitude, indexes, fadeTime):
-    runPSU()
-    commandList = []
-    for i in indexes:
-        endVal = brightnessChange(pixels[i], magnitude)
-        commandList.append([[i], endVal, fadeTime])
-    multiCommand(commandList)
+    def multiCommand(self, commandList):
+        '''Multicommand format: [indexes, rgb value, fadetime]
+        allows for multiple different pixels to be set to multiple different values
+        this is more efficent than stringing individual commands together'''
+        for x in commandList:
+            #Which pixels are being controlled?
+            indexes = x[0]
+            #How much time does it take to complete?
+            frames = int(x[2] * self.frameRate)
+            if not frames:
+                frames = 2
+            #What color are we fading to?
+            rgb = x[1]
+            for i in indexes:
+                self.remaining[i] = frames
+                for c in range(3):
+                    self.diff[i][c] = (rgb[c] - self.pixels[i][c]) / frames
+                self.endVals[i] = rgb
+
+    def relativeFade(self, magnitude, indexes, fadeTime):
+        '''fade value up or down relative to current pixel values'''
+        commandList = []
+        for i in indexes:
+            endVal = brightnessChange(self.pixels[i], magnitude)
+            commandList.append([[i], endVal, fadeTime])
+        self.multiCommand(commandList)
+
+    def render(self, PSU):
+        '''Primary rendering loop, takes commands from API handler at start and
+        submits frames at end'''
+        print('Initiating Render Loop...')
+        checkPSU = False
+        while True:
+            now = time.perf_counter()
+            while not self.commands.empty():
+                newCommand, args = self.commands.get()
+                checkPSU = True
+                try:
+                    newCommand(*args)
+                except Exception as e:
+                    print('Command failed!')
+                    logError(str(e))
+
+            anyRemaining = False
+            for pix in range(512):
+                if not self.remaining[pix]:
+                    pass
+                elif self.remaining[pix] > 1:
+                    for i in range(3):
+                        self.pixels[pix][i] += self.diff[pix][i]
+                    self.remaining[pix] -= 1
+                    anyRemaining = True
+                elif self.remaining[pix] == 1:
+                    self.pixels[pix] = self.endVals[pix]
+                    self.remaining[pix] -= 1
+                    anyRemaining = True
+            if checkPSU:
+                PSU.update(self.pixels)
+                checkPSU = False
+
+            try:
+                self.opcClient.put_pixels(self.pixels)
+            except Exception as e:
+                print('Unable to contact opc Client')
+            cycleTime = time.perf_counter() - now
+            time.sleep(max((1 / self.frameRate) - cycleTime, 0))
+            if not anyRemaining:
+                PSU.update(self.pixels)
+                if self.commands.empty():
+                    self.clockerActive.clear()
+                    print('Sleeping render loop...')
+            self.clockerActive.wait()
+
 
 ###################COMMAND TYPE HANDLING########################################
 class Pixels(Resource):
