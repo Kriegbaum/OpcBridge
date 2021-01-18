@@ -64,7 +64,6 @@ class PSU:
         self.ip = ip
         self.port = port
         self.index = index
-        self.state = False
 
     def switch(self, state):
         '''Switch relay attached to lighting PSU'''
@@ -87,13 +86,11 @@ class PSU:
     def update(self, pixels):
         '''If pixel array has no lights on, kill its associated PSU'''
         if self.checkPixels(pixels):
-            if not self.state:
-                print('Spinning up PSU')
-                self.switch(True)
+            print('Spinning up PSU')
+            self.switch(True)
         else:
-            if self.state:
-                print('Killing PSU')
-                self.switch(False)
+            print('Killing PSU')
+            self.switch(False)
 
 
 class Renderer:
@@ -117,6 +114,7 @@ class Renderer:
         self.opcClient = opc.Client('localhost:7890')
         self.arbitration = [False, '127.0.0.1']
         self.renderLoop = threading.Thread(target=self.render)
+        self.renderLoop.daemon = True
 
     def absoluteFade(self, rgb, indexes, fadeTime):
         '''Take pixels marked in indexes and fade them to value in rgb over
@@ -205,68 +203,92 @@ class Renderer:
                     print('Sleeping render loop...')
             self.clockerActive.wait()
 
+class ApiHandler:
+    def __init__(self, localIp, port):
+        self.fetcher = Flask(__name__)
+        self.api = Api(self.fetcher)
+        self.parser = reqparse.RequestParser()
 
-###################COMMAND TYPE HANDLING########################################
-class Pixels(Resource):
-    def get(self):
-        '''Gives the entire pixel array back to the client as a 512 * 3 array'''
-        print('\nSending pixels to %s \n' % request.remote_addr)
-        message = pixelsToJson(pixels)
-        return message
+    #########################VARIOUS COMMAND FIELDS#########################
+        self.parser.add_argument('fadetime', type=float, help='How long will this fade take?')
+        self.parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
+        self.parser.add_argument('id', type=str, help='Arbtration ID')
+        self.parser.add_argument('ip', type=str, help='IP address of client')
+        self.parser.add_argument('rgb', type=json.loads, help='Target color')
+        self.parser.add_argument('magnitude', type=float, help='Size of fade')
+        self.parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
 
-class Arbitration(Resource):
-    def put(self):
-        args = parser.parse_args()
-        id = args['id']
-        ip = request.remote_addr
-        print('\nGiving arbitration to %s from %s\n' % (id, ip))
-        arbitration[0] = id
-        arbitration[1] = ip
+        self.api.add_resource(self.Pixels, '/pixels')
+        self.api.add_resource(self.Arbitration, '/arbitration')
+        self.api.add_resource(self.AbsoluteFade, '/absolutefade')
+        self.api.add_resource(self.MultiCommand, '/multicommand')
+        self.api.add_resource(self.RelativeFade, '/relativefade')
 
-    def get(self):
-        args = parser.parse_args()
-        id = args['id']
-        ip = request.remote_addr
-        print('\nSending arbitration to %s for %s\n' % (ip, id))
-        if id != arbitration[0]:
-            return False
-        elif ip != arbitration[1]:
-            return False
-        else:
-            return True
+        self.localIp = localIp
+        self.port = port
 
-class AbsoluteFade(Resource):
-    '''Is given a color to fade to, and executes fade'''
-    def get(self):
-        args = parser.parse_args()
-        fadeTime = args['fadetime']
-        rgb = args['rgb']
-        indexes = args['indexes']
-        commands.put((absoluteFade, [rgb, indexes, fadeTime]))
-        clockerActive.set()
+    ###################COMMAND TYPE HANDLING########################################
+    class Pixels(Resource):
+        def get(self):
+            '''Gives the entire pixel array back to the client as a 512 * 3 array'''
+            print('\nSending pixels to %s \n' % request.remote_addr)
+            message = pixelsToJson(pixels)
+            return message
 
-class MultiCommand(Resource):
-    '''Is given a list of indexes, associated values and fade times
-    executes them all in one action. This is much more efficent than
-    several absoluteFade commands strung together'''
-    def get(self):
-        args = parser.parse_args()
-        commandList = args['commandlist']
-        commands.put((multiCommand, [commandList]))
-        clockerActive.set()
+    class Arbitration(Resource):
+        def put(self):
+            args = parser.parse_args()
+            id = args['id']
+            ip = request.remote_addr
+            print('\nGiving arbitration to %s from %s\n' % (id, ip))
+            arbitration[0] = id
+            arbitration[1] = ip
 
-class RelativeFade(Resource):
-    '''Is given a brightness change, and alters the brightness, likely unpredicatable
-    behavior if called in the middle of another fade'''
-    def get(self):
-        args = parser.parse_args()
-        indexes = args['indexes']
-        magnitude = args['magnitude']
-        fadeTime = args['fadetime']
-        commands.put((relativeFade, [magnitude, indexes, fadeTime]))
-        clockerActive.set()
+        def get(self):
+            args = parser.parse_args()
+            id = args['id']
+            ip = request.remote_addr
+            print('\nSending arbitration to %s for %s\n' % (ip, id))
+            if id != arbitration[0]:
+                return False
+            elif ip != arbitration[1]:
+                return False
+            else:
+                return True
 
+    class AbsoluteFade(Resource):
+        '''Is given a color to fade to, and executes fade'''
+        def get(self):
+            args = parser.parse_args()
+            fadeTime = args['fadetime']
+            rgb = args['rgb']
+            indexes = args['indexes']
+            commands.put((absoluteFade, [rgb, indexes, fadeTime]))
+            clockerActive.set()
 
+    class MultiCommand(Resource):
+        '''Is given a list of indexes, associated values and fade times
+        executes them all in one action. This is much more efficent than
+        several absoluteFade commands strung together'''
+        def get(self):
+            args = parser.parse_args()
+            commandList = args['commandlist']
+            commands.put((multiCommand, [commandList]))
+            clockerActive.set()
+
+    class RelativeFade(Resource):
+        '''Is given a brightness change, and alters the brightness, likely unpredicatable
+        behavior if called in the middle of another fade'''
+        def get(self):
+            args = parser.parse_args()
+            indexes = args['indexes']
+            magnitude = args['magnitude']
+            fadeTime = args['fadetime']
+            commands.put((relativeFade, [magnitude, indexes, fadeTime]))
+            clockerActive.set()
+
+    def launch(self):
+        self.fetcher.run(host=self.localIP, port=self.port, debug=False)
 
 
 if __name__ == '__main__':
@@ -274,30 +296,6 @@ if __name__ == '__main__':
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcConfig.yml')) as f:
         configFile = f.read()
     configs = yaml.safe_load(configFile)
-
-    ################################FLASK OBJECTS###################################
-    FLASK_DEBUG = False
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
-    fetcher = Flask(__name__)
-    api = Api(fetcher)
-
-    api.add_resource(Pixels, '/pixels')
-    api.add_resource(Arbitration, '/arbitration')
-    api.add_resource(AbsoluteFade, '/absolutefade')
-    api.add_resource(MultiCommand, '/multicommand')
-    api.add_resource(RelativeFade, '/relativefade')
-
-    parser = reqparse.RequestParser()
-
-    #########################VARIOUS COMMAND FIELDS#################################
-    parser.add_argument('fadetime', type=float, help='How long will this fade take?')
-    parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
-    parser.add_argument('id', type=str, help='Arbtration ID')
-    parser.add_argument('ip', type=str, help='IP address of client')
-    parser.add_argument('rgb', type=json.loads, help='Target color')
-    parser.add_argument('magnitude', type=float, help='Size of fade')
-    parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
 
     ##########################GET LOCAL IP##########################################
     ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
