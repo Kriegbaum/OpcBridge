@@ -1,3 +1,6 @@
+[![codecov](https://codecov.io/gh/Kriegbaum/OpcBridge/branch/main/graph/badge.svg?token=CAMPQXNTIR)](https://codecov.io/gh/Kriegbaum/OpcBridge)
+[![Travis](https://www.travis-ci.com/Kriegbaum/OpcBridge.svg?branch=main)
+
 # OpcBridge
 This is a server that implements a simple rendering engine controlled by a REST API. 
 It controls a 512x3 array of RGB values which are submitted to an Open Pixel Control Server.
