@@ -15,6 +15,7 @@ import requests
 
 ############################SUPPORT FUNCTIONS###################################
 def getLocalIP():
+    '''Get our IP address'''
     ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         ipSock.connect(('10.255.255.255', 1))
@@ -28,6 +29,8 @@ def getLocalIP():
     return localIP
 
 def pixelsToJson(npArray):
+    '''numPy arrays do not cleanly serialize. This takes our numPy array and converts
+    to a standard python list so that we can easily dump it as JSON'''
     lstOut = []
     for i in npArray:
         lstOut.append([int(i[0]), int(i[1]), int(i[2])])
@@ -60,16 +63,6 @@ def brightnessChange(rgb, magnitude):
     else:
         return rgb
 
-def bridgeValues(totalSteps, start, end):
-    '''Generator that creates interpolated steps between a start and end value'''
-    newRGB = start
-    diffR = (end[0] - start[0]) / float(totalSteps)
-    diffG = (end[1] - start[1]) / float(totalSteps)
-    diffB = (end[2] - start[2]) / float(totalSteps)
-    for i in range(totalSteps - 1):
-        newRGB = [newRGB[0] + diffR, newRGB[1] + diffG, newRGB[2] + diffB]
-        yield [int(newRGB[0]), int(newRGB[1]), int(newRGB[2])]
-    yield end
 ################################################################################
 
 class PSU:
@@ -82,7 +75,7 @@ class PSU:
         '''Switch relay attached to lighting PSU'''
         try:
             params = {'index': self.index, 'state': state}
-            requests.get('http://' + self.ip + ':' + str(self.port) + '/switch', json=params, timeout=4)
+            requests.get('http://' + self.ip + ':' + str(self.port) + '/switch', json=params, timeout=3)
         except Exception as e:
             print('Failed to connect to relay processor')
             print(e)
