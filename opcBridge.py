@@ -14,6 +14,19 @@ import logging
 import requests
 
 ############################SUPPORT FUNCTIONS###################################
+def getLocalIP():
+    ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        ipSock.connect(('10.255.255.255', 1))
+        localIP = ipSock.getsockname()[0]
+        print('Local IP set to', localIP)
+    except Exception as e:
+        print(e)
+        print('Local IP detection failed, listening on localhost')
+        localIP = '127.0.0.1'
+    ipSock.close()
+    return localIP
+
 def pixelsToJson(npArray):
     lstOut = []
     for i in npArray:
@@ -60,7 +73,7 @@ def bridgeValues(totalSteps, start, end):
 ################################################################################
 
 class PSU:
-    def __init__(self, ip, port, index):
+    def __init__(self, ip, index, port=8001):
         self.ip = ip
         self.port = port
         self.index = index
@@ -68,11 +81,11 @@ class PSU:
     def switch(self, state):
         '''Switch relay attached to lighting PSU'''
         try:
-            params = {'index': self.index, 'state': self.state}
-            requests.get('http://' + ip + ':' + str(port) + '/switch', json=params, timeout=4)
-            self.state = state
-        except:
+            params = {'index': self.index, 'state': state}
+            requests.get('http://' + self.ip + ':' + str(self.port) + '/switch', json=params, timeout=4)
+        except Exception as e:
             print('Failed to connect to relay processor')
+            print(e)
 
     def checkPixels(self, pixels):
         '''Crawl down pixel array, if any value is above 0 return true
@@ -94,7 +107,7 @@ class PSU:
 
 
 class Renderer:
-    def __init__(self):
+    def __init__(self, frameRate, PSU=False):
         #Current value of pixels being submitted to opc
         self.pixels = np.zeros((512, 3), dtype='float32')
         #Differential array: stores difference between this frame and the next
@@ -110,11 +123,11 @@ class Renderer:
         #API handler thread produces commands, Render Loop consumes them
         self.commands = queue.Queue(maxsize=100)
         #TODO: Make framerate and opcClient ip configurable
-        self.frameRate = 16
+        self.frameRate = frameRate
         self.opcClient = opc.Client('localhost:7890')
-        self.arbitration = [False, '127.0.0.1']
         self.renderLoop = threading.Thread(target=self.render)
         self.renderLoop.daemon = True
+        self.PSU = PSU
 
     def absoluteFade(self, rgb, indexes, fadeTime):
         '''Take pixels marked in indexes and fade them to value in rgb over
@@ -127,7 +140,7 @@ class Renderer:
         for i in indexes:
             self.remaining[i] = frames
             for c in range(3):
-                self.diff[i][c] = (rgb[c] - pixels[i][c]) / frames
+                self.diff[i][c] = (rgb[c] - self.pixels[i][c]) / frames
             self.endVals[i] = rgb
 
     def multiCommand(self, commandList):
@@ -157,7 +170,7 @@ class Renderer:
             commandList.append([[i], endVal, fadeTime])
         self.multiCommand(commandList)
 
-    def render(self, PSU):
+    def render(self):
         '''Primary rendering loop, takes commands from API handler at start and
         submits frames at end'''
         print('Initiating Render Loop...')
@@ -186,8 +199,8 @@ class Renderer:
                     self.pixels[pix] = self.endVals[pix]
                     self.remaining[pix] -= 1
                     anyRemaining = True
-            if checkPSU:
-                PSU.update(self.pixels)
+            if self.PSU and checkPSU:
+                self.PSU.update(self.pixels)
                 checkPSU = False
 
             try:
@@ -197,35 +210,51 @@ class Renderer:
             cycleTime = time.perf_counter() - now
             time.sleep(max((1 / self.frameRate) - cycleTime, 0))
             if not anyRemaining:
-                PSU.update(self.pixels)
+                if self.PSU:
+                    self.PSU.update(self.pixels)
                 if self.commands.empty():
                     self.clockerActive.clear()
                     print('Sleeping render loop...')
             self.clockerActive.wait()
 
-class ApiHandler:
-    def __init__(self, localIp, port):
-        self.fetcher = Flask(__name__)
-        self.api = Api(self.fetcher)
-        self.parser = reqparse.RequestParser()
+
+if __name__ == '__main__':
+    #########################LOAD IN USER CONFIG####################################
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcConfig.yml')) as f:
+        configFile = f.read()
+    configs = yaml.safe_load(configFile)
+
+
+    ##################SERVER LOGGING AND REPORTING FUNCTIONS########################
+    def logError(err):
+        print(err)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcBridge-log.txt'), 'a') as logFile:
+            logFile.write(err)
+            logFile.write('\n')
+
+    bootMsg = 'Server booted at ' + str(datetime.datetime.now()) + '\n'
+    logError(bootMsg)
+
+    psu = PSU(configs['PSUs']['ip'], configs['PSUs']['index'], port=configs['PSUs']['port'])
+    renderer = Renderer(configs['framerate'], PSU=psu)
+
+
+    flaskServer = Flask(__name__)
+    api = Api(flaskServer)
+
+    localIP = getLocalIP()
+    port = 8000
+    arbitration = [False, '127.0.0.1']
+    parser = reqparse.RequestParser()
 
     #########################VARIOUS COMMAND FIELDS#########################
-        self.parser.add_argument('fadetime', type=float, help='How long will this fade take?')
-        self.parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
-        self.parser.add_argument('id', type=str, help='Arbtration ID')
-        self.parser.add_argument('ip', type=str, help='IP address of client')
-        self.parser.add_argument('rgb', type=json.loads, help='Target color')
-        self.parser.add_argument('magnitude', type=float, help='Size of fade')
-        self.parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
-
-        self.api.add_resource(self.Pixels, '/pixels')
-        self.api.add_resource(self.Arbitration, '/arbitration')
-        self.api.add_resource(self.AbsoluteFade, '/absolutefade')
-        self.api.add_resource(self.MultiCommand, '/multicommand')
-        self.api.add_resource(self.RelativeFade, '/relativefade')
-
-        self.localIp = localIp
-        self.port = port
+    parser.add_argument('fadetime', type=float, help='How long will this fade take?')
+    parser.add_argument('indexes', type=json.loads, help='Which pixels are targeted')
+    parser.add_argument('id', type=str, help='Arbtration ID')
+    parser.add_argument('ip', type=str, help='IP address of client')
+    parser.add_argument('rgb', type=json.loads, help='Target color')
+    parser.add_argument('magnitude', type=float, help='Size of fade')
+    parser.add_argument('commandlist', type=json.loads, help='List of commands for a multicommand')
 
     ###################COMMAND TYPE HANDLING########################################
     class Pixels(Resource):
@@ -263,8 +292,8 @@ class ApiHandler:
             fadeTime = args['fadetime']
             rgb = args['rgb']
             indexes = args['indexes']
-            commands.put((absoluteFade, [rgb, indexes, fadeTime]))
-            clockerActive.set()
+            renderer.commands.put((renderer.absoluteFade, [rgb, indexes, fadeTime]))
+            renderer.clockerActive.set()
 
     class MultiCommand(Resource):
         '''Is given a list of indexes, associated values and fade times
@@ -273,8 +302,8 @@ class ApiHandler:
         def get(self):
             args = parser.parse_args()
             commandList = args['commandlist']
-            commands.put((multiCommand, [commandList]))
-            clockerActive.set()
+            renderer.commands.put((renderer.multiCommand, [commandList]))
+            renderer.clockerActive.set()
 
     class RelativeFade(Resource):
         '''Is given a brightness change, and alters the brightness, likely unpredicatable
@@ -284,77 +313,35 @@ class ApiHandler:
             indexes = args['indexes']
             magnitude = args['magnitude']
             fadeTime = args['fadetime']
-            commands.put((relativeFade, [magnitude, indexes, fadeTime]))
-            clockerActive.set()
+            renderer.commands.put((renderer.relativeFade, [magnitude, indexes, fadeTime]))
+            renderer.clockerActive.set()
 
-    def launch(self):
-        self.fetcher.run(host=self.localIP, port=self.port, debug=False)
+    api.add_resource(Pixels, '/pixels')
+    api.add_resource(Arbitration, '/arbitration')
+    api.add_resource(AbsoluteFade, '/absolutefade')
+    api.add_resource(MultiCommand, '/multicommand')
+    api.add_resource(RelativeFade, '/relativefade')
 
-
-if __name__ == '__main__':
-    #########################LOAD IN USER CONFIG####################################
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcConfig.yml')) as f:
-        configFile = f.read()
-    configs = yaml.safe_load(configFile)
-
-    ##########################GET LOCAL IP##########################################
-    ipSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        ipSock.connect(('10.255.255.255', 1))
-        localIP = ipSock.getsockname()[0]
-        print('Local IP set to', localIP)
-    except Exception as e:
-        print(e)
-        print('Local IP detection failed, listening on localhost')
-        localIP = '127.0.0.1'
-    ipSock.close()
-
-    #########################CONTROL OBJECT DEFINITIONS#############################
-    pixels = np.zeros((512, 3), dtype='float32')
-    diff = np.zeros((512, 3), dtype='float32' )
-    endVals = np.zeros((512, 3), dtype='float32')
-    remaining = np.zeros((512), dtype='uint16')
-
-    clockerActive = threading.Event()
-
-    commands = queue.Queue(maxsize=100)
-    frameRate = 16
-    FCclient = opc.Client('localhost:7890')
-    arbitration = [False, '127.0.0.1']
-
-    ##################SERVER LOGGING AND REPORTING FUNCTIONS########################
-    def logError(err):
-        print(err)
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opcBridge-log.txt'), 'a') as logFile:
-            logFile.write(err)
-            logFile.write('\n')
-
-    bootMsg = 'Server booted at ' + str(datetime.datetime.now()) + '\n'
-    logError(bootMsg)
-
-
-    clocker = threading.Thread(target=clockLoop)
+    psu.switch(True)
 
     #Test pattern to indicate server is up and running
     testPatternOff = np.zeros((512, 3))
     testPatternRed = np.full((512, 3), [64,0,0])
 
-    FCclient.put_pixels(testPatternRed)
-    FCclient.put_pixels(testPatternRed)
+    renderer.opcClient.put_pixels(testPatternRed)
+    renderer.opcClient.put_pixels(testPatternRed)
     time.sleep(.5)
-    FCclient.put_pixels(testPatternOff)
-    FCclient.put_pixels(testPatternOff)
+    renderer.opcClient.put_pixels(testPatternOff)
+    renderer.opcClient.put_pixels(testPatternOff)
     time.sleep(.5)
-    FCclient.put_pixels(testPatternRed)
-    FCclient.put_pixels(testPatternRed)
+    renderer.opcClient.put_pixels(testPatternRed)
+    renderer.opcClient.put_pixels(testPatternRed)
     time.sleep(.5)
-    FCclient.put_pixels(testPatternOff)
-    FCclient.put_pixels(testPatternOff)
-
+    renderer.opcClient.put_pixels(testPatternOff)
+    renderer.opcClient.put_pixels(testPatternOff)
     del testPatternOff
     del testPatternRed
 
-    #Initiate server
-    clocker.daemon = True
-    clocker.start()
-    fetcher.run(host=localIP, port=8000, debug=FLASK_DEBUG)
+
+    renderer.renderLoop.start()
+    flaskServer.run(host=localIP, port=port, debug=False)
