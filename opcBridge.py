@@ -70,12 +70,14 @@ class PSU:
         self.ip = ip
         self.port = port
         self.index = index
+        self.state = False
 
     def switch(self, state):
         '''Switch relay attached to lighting PSU'''
         try:
             params = {'index': self.index, 'state': state}
             requests.get('http://' + self.ip + ':' + str(self.port) + '/switch', json=params, timeout=3)
+            self.state = state
         except Exception as e:
             print('Failed to connect to relay processor')
             print(e)
@@ -93,10 +95,12 @@ class PSU:
         '''If pixel array has no lights on, kill its associated PSU'''
         if self.checkPixels(pixels):
             print('Spinning up PSU')
-            self.switch(True)
+            if not self.state:
+                self.switch(True)
         else:
             print('Killing PSU')
-            self.switch(False)
+            if self.state:
+                self.switch(False)
 
 
 class Renderer:
@@ -177,12 +181,9 @@ class Renderer:
         '''Primary rendering loop, takes commands from API handler at start and
         submits frames at end'''
         print('Initiating Render Loop...')
-        checkPSU = False
         while True:
             now = time.perf_counter()
-            if not self.commands.empty():
-                checkPSU = True
-                self.executeCommands()
+            self.executeCommands()
             anyRemaining = False
             for pix in range(512):
                 if not self.remaining[pix]:
@@ -196,10 +197,6 @@ class Renderer:
                     self.pixels[pix] = self.endVals[pix]
                     self.remaining[pix] -= 1
                     anyRemaining = True
-            if self.PSU and checkPSU:
-                self.PSU.update(self.pixels)
-                checkPSU = False
-
             try:
                 self.opcClient.put_pixels(self.pixels)
             except Exception as e:
