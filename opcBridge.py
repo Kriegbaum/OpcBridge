@@ -94,12 +94,12 @@ class PSU:
     def update(self, pixels):
         '''If pixel array has no lights on, kill its associated PSU'''
         if self.checkPixels(pixels):
-            print('Spinning up PSU')
             if not self.state:
+                print('Spinning up PSU')
                 self.switch(True)
         else:
-            print('Killing PSU')
             if self.state:
+                print('Killing PSU')
                 self.switch(False)
 
 
