@@ -128,7 +128,7 @@ class Renderer:
         #If the fadeTime is 0, we still want at least 2 frames
         #If only one frame, the interpolation engine will produce slow fade
         if not fadeTime:
-            fadeTime = 2 / frameRate
+            fadeTime = 2 / self.frameRate
         frames = int(fadeTime * self.frameRate)
         for i in indexes:
             self.remaining[i] = frames
@@ -163,6 +163,16 @@ class Renderer:
             commandList.append([[i], endVal, fadeTime])
         self.multiCommand(commandList)
 
+    def executeCommands(self):
+        '''Take all commands out of command queue and execute them'''
+        while not self.commands.empty():
+            newCommand, args = self.commands.get()
+            try:
+                newCommand(*args)
+            except Exception as e:
+                print('Command failed!')
+                logError(str(e))
+
     def render(self):
         '''Primary rendering loop, takes commands from API handler at start and
         submits frames at end'''
@@ -170,15 +180,9 @@ class Renderer:
         checkPSU = False
         while True:
             now = time.perf_counter()
-            while not self.commands.empty():
-                newCommand, args = self.commands.get()
+            if not self.commands.empty():
                 checkPSU = True
-                try:
-                    newCommand(*args)
-                except Exception as e:
-                    print('Command failed!')
-                    logError(str(e))
-
+                self.executeCommands()
             anyRemaining = False
             for pix in range(512):
                 if not self.remaining[pix]:
