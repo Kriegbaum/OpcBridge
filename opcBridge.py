@@ -169,6 +169,8 @@ class Renderer:
 
     def executeCommands(self):
         '''Take all commands out of command queue and execute them'''
+        if self.PSU and not self.commands.empty():
+            self.PSU.update(self.pixels)
         while not self.commands.empty():
             newCommand, args = self.commands.get()
             try:
